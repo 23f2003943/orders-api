@@ -1,11 +1,10 @@
-from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi import FastAPI, Header, Body
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from fastapi import Body
-from typing import Optional
+from fastapi.responses import JSONResponse
 import uuid
 import time
 import base64
+from typing import Optional
 
 app = FastAPI()
 
@@ -22,13 +21,7 @@ RATE_LIMIT = 16
 WINDOW = 10
 
 # Fixed catalog
-catalog = [
-    {
-        "id": i,
-        "item": f"Item {i}"
-    }
-    for i in range(1, TOTAL_ORDERS + 1)
-]
+catalog = [{"id": i} for i in range(1, TOTAL_ORDERS + 1)]
 
 # Idempotency storage
 idempotency_store = {}
@@ -37,63 +30,67 @@ idempotency_store = {}
 rate_limit_store = {}
 
 
-class OrderRequest(BaseModel):
-    item: str
-
-
-def check_rate_limit(client_id: str, response: Response):
+def check_rate_limit(client_id: str):
     now = time.time()
 
     history = rate_limit_store.get(client_id, [])
 
+    # Keep only requests within the last 10 seconds
     history = [t for t in history if now - t < WINDOW]
 
     if len(history) >= RATE_LIMIT:
-        retry_after = WINDOW - (now - history[0])
-        response.headers["Retry-After"] = str(int(retry_after) + 1)
-        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+        retry_after = max(1, int(WINDOW - (now - history[0])) + 1)
+
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded"},
+            headers={"Retry-After": str(retry_after)}
+        )
 
     history.append(now)
-
     rate_limit_store[client_id] = history
+
+    return None
 
 
 @app.post("/orders", status_code=201)
 def create_order(
-    response: Response,
     payload: dict = Body(default={}),
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
     x_client_id: str = Header("default", alias="X-Client-Id")
 ):
-    check_rate_limit(x_client_id, response)
+    limited = check_rate_limit(x_client_id)
+    if limited:
+        return limited
 
     if idempotency_key in idempotency_store:
         return idempotency_store[idempotency_key]
 
-    new_order = {
+    order = {
         "id": str(uuid.uuid4()),
         **payload
     }
 
-    idempotency_store[idempotency_key] = new_order
-    return new_order
+    idempotency_store[idempotency_key] = order
+
+    return order
 
 
 @app.get("/orders")
 def list_orders(
-    response: Response,
     limit: int = 10,
     cursor: Optional[str] = None,
     x_client_id: str = Header("default", alias="X-Client-Id")
 ):
-
-    check_rate_limit(x_client_id, response)
+    limited = check_rate_limit(x_client_id)
+    if limited:
+        return limited
 
     start = 0
 
     if cursor:
         try:
-            start = int(base64.b64decode(cursor).decode())
+            start = int(base64.b64decode(cursor.encode()).decode())
         except Exception:
             start = 0
 
