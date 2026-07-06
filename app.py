@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from fastapi import Body
 from typing import Optional
 import uuid
 import time
@@ -59,27 +60,22 @@ def check_rate_limit(client_id: str, response: Response):
 
 @app.post("/orders", status_code=201)
 def create_order(
-    order: OrderRequest,
     response: Response,
-    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+    payload: dict = Body(default={}),
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
     x_client_id: str = Header("default", alias="X-Client-Id")
 ):
-
     check_rate_limit(x_client_id, response)
-
-    if not idempotency_key:
-        raise HTTPException(status_code=400, detail="Missing Idempotency-Key")
 
     if idempotency_key in idempotency_store:
         return idempotency_store[idempotency_key]
 
     new_order = {
         "id": str(uuid.uuid4()),
-        "item": order.item
+        **payload
     }
 
     idempotency_store[idempotency_key] = new_order
-
     return new_order
 
 
